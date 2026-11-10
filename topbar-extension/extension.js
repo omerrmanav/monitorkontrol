@@ -34,6 +34,24 @@ class SystemMonitorReader {
         this._lastCpuActive = 0;
     }
 
+    getCpuName() {
+        try {
+            let [ok, bytes] = GLib.file_get_contents('/proc/cpuinfo');
+            if (!ok || !bytes)
+                return 'İşlemci';
+            let text = new TextDecoder().decode(bytes);
+            for (let line of text.split('\n')) {
+                if (line.includes('model name')) {
+                    let m = line.split(':')[1].trim();
+                    m = m.replace(/\(R\)|\(TM\)|Processor|CPU/gi, '').trim();
+                    m = m.replace(/\d+-Core.*/i, '').trim();
+                    return m.replace(/\s+/g, ' ');
+                }
+            }
+        } catch (e) {}
+        return 'İşlemci';
+    }
+
     getCpuTemp() {
         let best = null;
         for (let i = 0; i < 6; i++) {
@@ -109,7 +127,7 @@ class SystemMonitorReader {
     fetchGpuMetrics(callback) {
         try {
             let proc = Gio.Subprocess.new(
-                ['nvidia-smi', '--query-gpu=temperature.gpu,utilization.gpu', '--format=csv,noheader,nounits'],
+                ['nvidia-smi', '--query-gpu=temperature.gpu,utilization.gpu,name', '--format=csv,noheader,nounits'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
             );
             proc.communicate_utf8_async(null, null, (p, res) => {
@@ -120,7 +138,11 @@ class SystemMonitorReader {
                         if (parts.length >= 2) {
                             let temp = parseInt(parts[0].trim(), 10);
                             let util = parseInt(parts[1].trim(), 10);
-                            callback({temp, util});
+                            let name = 'GPU';
+                            if (parts.length >= 3) {
+                                name = parts[2].trim().replace(/^NVIDIA\s+/i, '').replace(/^GeForce\s+/i, '').trim();
+                            }
+                            callback({temp, util, name});
                         }
                     }
                 } catch (e) {}
@@ -251,7 +273,22 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         headerBox.add_child(this._modelLabel);
         headerBox.add_child(this._hzLabel);
         headerBox.add_child(refreshBtn);
-        this._headerItem.add_child(headerBox);
+
+        const headerWrapper = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style: 'spacing: 3px;',
+        });
+        headerWrapper.add_child(headerBox);
+
+        // Hardware Subtitle: CPU & GPU Name (clean & subtle)
+        this._hwSubtitleLabel = new St.Label({
+            text: 'Donanım taranıyor...',
+            style: 'font-size: 11px; font-weight: 500; color: rgba(255, 255, 255, 0.45); margin-left: 24px;',
+        });
+        headerWrapper.add_child(this._hwSubtitleLabel);
+
+        this._headerItem.add_child(headerWrapper);
         this.menu.addMenuItem(this._headerItem);
 
         // =========================================================================
@@ -625,6 +662,7 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
     }
 
     _refreshSystemStats() {
+        const cpuName = this._sysReader.getCpuName();
         const cpuTemp = this._sysReader.getCpuTemp();
         const cpuPct = this._sysReader.getCpuUsage();
         const ram = this._sysReader.getRamUsage();
@@ -651,6 +689,13 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
             if (gpu) {
                 paint(this._gpuStatsLabel, `${gpu.temp}°C`, pick(gpu.temp, 70, 80), 13);
                 paint(this._gpuPctLabel, `%${gpu.util}`, pick(gpu.util, 50, 85), 11);
+                if (gpu.name) {
+                    this._hwSubtitleLabel.set_text(`${cpuName}  •  ${gpu.name}`);
+                } else {
+                    this._hwSubtitleLabel.set_text(cpuName);
+                }
+            } else {
+                this._hwSubtitleLabel.set_text(cpuName);
             }
         });
     }
