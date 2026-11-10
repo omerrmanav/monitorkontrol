@@ -7,8 +7,6 @@
 <p align="center">
   <b>Linux GNOME için DDC/CI tabanlı modern monitör kontrol ve donanım izleme paneli.</b>
 </p>
----
-
 
 Linux'ta monitörünüzün **parlaklık** ve **kontrastını** (DDC/CI ile), **yazı ölçeğini**, **koyu/açık temayı** ve CPU/GPU/RAM durumunu GNOME üst barından yönetin. Monitörün fiziksel tuşlarına gerek kalmaz.
 
