@@ -9,8 +9,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
+import * as LoginManager from 'resource:///org/gnome/shell/misc/loginManager.js';
 
-const CACHE_FILE = '/tmp/monitorkontrol_cache.json';
+const CONFIG_DIR = GLib.build_filenamev([GLib.get_user_config_dir(), 'monitorkontrol']);
+const CONFIG_FILE = GLib.build_filenamev([CONFIG_DIR, 'config.json']);
+const TMP_CACHE_FILE = '/tmp/monitorkontrol_cache.json';
 
 const MIN_FONT_SCALE = 0.70;
 const MAX_FONT_SCALE = 2.00;
@@ -211,6 +214,10 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         this._debounceContrastId = 0;
         this._debounceFontId = 0;
         this._statsTimerId = 0;
+        this._restoreTimerId = 0;
+        this._shieldSignalId = 0;
+        this._sleepSignalId = 0;
+        this._monitorsSignalId = 0;
         this._updatingFromCache = false;
         this._updatingFromSettings = false;
 
@@ -646,6 +653,37 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
 
         this._loadInstantCache();
         this._syncFontScaleFromSettings();
+
+        // 1. Initial restore on login / extension start (anında uygulanır)
+        this._restoreSavedHardwareSettings(30);
+
+        // 2. Restore when screen unlocks (şifreyi girip enter'a basar basmaz anında uygulanır)
+        if (Main.screenShield) {
+            this._shieldSignalId = Main.screenShield.connect('active-changed', () => {
+                if (!Main.screenShield.active) {
+                    // Lock screen dismissed / screen unlocked!
+                    this._restoreSavedHardwareSettings(30);
+                }
+            });
+        }
+
+        // 3. Restore when system resumes from sleep / suspend
+        try {
+            this._loginManager = LoginManager.getLoginManager();
+            if (this._loginManager) {
+                this._sleepSignalId = this._loginManager.connect('prepare-for-sleep', (_lm, aboutToSuspend) => {
+                    if (!aboutToSuspend) {
+                        // System just resumed from sleep!
+                        this._restoreSavedHardwareSettings(50);
+                    }
+                });
+            }
+        } catch (e) {}
+
+        // 4. Restore when monitors wake or reconfigure
+        this._monitorsSignalId = Main.layoutManager.connect('monitors-changed', () => {
+            this._restoreSavedHardwareSettings(30);
+        });
     }
 
     _toggleDarkMode(enabled) {
@@ -701,6 +739,16 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
     }
 
     _scheduleVcp(flag, pct, isBrightness) {
+        try {
+            const data = this._getCurrentCachedData();
+            if (isBrightness) {
+                data.brightness = pct;
+            } else {
+                data.contrast = pct;
+            }
+            this._saveInstantCache(data);
+        } catch (e) {}
+
         if (isBrightness) {
             if (this._debounceBrightnessId)
                 GLib.source_remove(this._debounceBrightnessId);
@@ -720,6 +768,56 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         }
     }
 
+    _getCurrentCachedData() {
+        try {
+            let [ok, bytes] = GLib.file_get_contents(CONFIG_FILE);
+            if (ok && bytes) {
+                return JSON.parse(new TextDecoder().decode(bytes));
+            }
+            let [okTmp, bytesTmp] = GLib.file_get_contents(TMP_CACHE_FILE);
+            if (okTmp && bytesTmp) {
+                return JSON.parse(new TextDecoder().decode(bytesTmp));
+            }
+        } catch (e) {}
+        return {
+            brightness: 50,
+            contrast: 80,
+            supported: true,
+        };
+    }
+
+    _saveInstantCache(data) {
+        try {
+            GLib.mkdir_with_parents(CONFIG_DIR, 0o755);
+            const json = JSON.stringify(data);
+            GLib.file_set_contents(CONFIG_FILE, json);
+            GLib.file_set_contents(TMP_CACHE_FILE, json);
+        } catch (e) {}
+    }
+
+    _restoreSavedHardwareSettings(delayMs = 30) {
+        if (this._restoreTimerId) {
+            GLib.source_remove(this._restoreTimerId);
+            this._restoreTimerId = 0;
+        }
+        this._restoreTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+            this._restoreTimerId = 0;
+            try {
+                this._loadInstantCache();
+                const data = this._getCurrentCachedData();
+                if (data && data.supported !== false) {
+                    if (typeof data.brightness === 'number') {
+                        this._ddcQueue.push('--brightness', data.brightness);
+                    }
+                    if (typeof data.contrast === 'number') {
+                        this._ddcQueue.push('--contrast', data.contrast);
+                    }
+                }
+            } catch (e) {}
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     _syncFontScaleFromSettings() {
         try {
             const factor = this._interfaceSettings.get_double('text-scaling-factor') || 1.0;
@@ -734,8 +832,16 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
 
     _loadInstantCache() {
         try {
-            const [ok, contents] = GLib.file_get_contents(CACHE_FILE);
-            if (!ok || !contents)
+            let contents = null;
+            let [ok, bytes] = GLib.file_get_contents(CONFIG_FILE);
+            if (ok && bytes) {
+                contents = bytes;
+            } else {
+                let [okTmp, bytesTmp] = GLib.file_get_contents(TMP_CACHE_FILE);
+                if (okTmp && bytesTmp)
+                    contents = bytesTmp;
+            }
+            if (!contents)
                 return;
             const text = new TextDecoder().decode(contents);
             const data = JSON.parse(text);
@@ -781,6 +887,22 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        if (this._restoreTimerId) {
+            GLib.source_remove(this._restoreTimerId);
+            this._restoreTimerId = 0;
+        }
+        if (this._shieldSignalId && Main.screenShield) {
+            Main.screenShield.disconnect(this._shieldSignalId);
+            this._shieldSignalId = 0;
+        }
+        if (this._sleepSignalId && this._loginManager) {
+            this._loginManager.disconnect(this._sleepSignalId);
+            this._sleepSignalId = 0;
+        }
+        if (this._monitorsSignalId) {
+            Main.layoutManager.disconnect(this._monitorsSignalId);
+            this._monitorsSignalId = 0;
+        }
         if (this._debounceBrightnessId) {
             GLib.source_remove(this._debounceBrightnessId);
             this._debounceBrightnessId = 0;

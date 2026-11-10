@@ -420,6 +420,15 @@ fn main() -> eframe::Result<()> {
                 println!("Kontrast  : %{}", st.contrast);
                 return Ok(());
             }
+            "--restore" | "-r" => {
+                let st = CachedMonitorData::load_instant();
+                if st.supported && st.i2c_bus > 0 {
+                    ddc::set_vcp_fast(st.i2c_bus, 0x10, st.brightness);
+                    ddc::set_vcp_fast(st.i2c_bus, 0x12, st.contrast);
+                    println!("Kayıtlı değerler monitöre uygulandı: Parlaklık %{}, Kontrast %{}", st.brightness, st.contrast);
+                }
+                return Ok(());
+            }
             "--brightness" | "-b" => {
                 if let Some(v) = args.get(1).and_then(|s| s.parse::<u16>().ok()) {
                     let bus = CachedMonitorData::load_instant().i2c_bus;

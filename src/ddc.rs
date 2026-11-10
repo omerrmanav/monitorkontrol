@@ -7,6 +7,18 @@ use std::thread;
 
 const CACHE_FILE: &str = "/tmp/monitorkontrol_cache.json";
 
+fn get_config_file_path() -> std::path::PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return std::path::PathBuf::from(xdg).join("monitorkontrol").join("config.json");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return std::path::PathBuf::from(home).join(".config").join("monitorkontrol").join("config.json");
+    }
+    std::path::PathBuf::from(CACHE_FILE)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedMonitorData {
     pub i2c_bus: u32,
@@ -73,8 +85,14 @@ pub fn detect_monitor() -> Option<(u32, String, String)> {
 }
 
 impl CachedMonitorData {
-    /// Instant (<0.05ms) read from /tmp cache without touching I2C or stalling the GPU driver.
+    /// Instant (<0.05ms) read from persistent config or cache.
     pub fn load_instant() -> Self {
+        let cfg_path = get_config_file_path();
+        if let Ok(content) = fs::read_to_string(&cfg_path) {
+            if let Ok(data) = serde_json::from_str::<Self>(&content) {
+                return data;
+            }
+        }
         if let Ok(content) = fs::read_to_string(CACHE_FILE) {
             if let Ok(data) = serde_json::from_str::<Self>(&content) {
                 return data;
@@ -87,7 +105,12 @@ impl CachedMonitorData {
 
     pub fn save_instant(&self) {
         if let Ok(json) = serde_json::to_string(self) {
-            let _ = fs::write(CACHE_FILE, json);
+            let cfg_path = get_config_file_path();
+            if let Some(parent) = cfg_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&cfg_path, &json);
+            let _ = fs::write(CACHE_FILE, &json);
         }
     }
 
@@ -268,6 +291,8 @@ pub fn set_vcp_fast(bus: u32, code: u8, value: u16) {
 
 pub fn read_hardware_state() -> CachedMonitorData {
     let mut data = CachedMonitorData::load_instant();
+    let saved_brightness = data.brightness;
+    let saved_contrast = data.contrast;
 
     if !data.supported {
         match detect_monitor() {
@@ -335,6 +360,11 @@ pub fn read_hardware_state() -> CachedMonitorData {
     data.supported = got_brightness;
     if !got_brightness {
         data.model = format!("{} (DDC/CI parlaklık desteği yok)", data.model);
+    } else if saved_brightness > 0 {
+        // Monitör uyku/kilit sonrası donanımsal olarak 100'e fırlasa bile
+        // kullanıcının kaydettiği parlaklık ve kontrast tercihini koru.
+        data.brightness = saved_brightness;
+        data.contrast = saved_contrast;
     }
     data.save_instant();
     data
