@@ -27,11 +27,8 @@ say "2/5  Derleniyor"
 if [ ! -x "$BIN" ]; then
     if command -v cargo >/dev/null; then
         (cd "$ROOT" && cargo build --release)
-    elif command -v docker >/dev/null; then
-        echo "cargo yok, Docker ile derleniyor..."
-        docker build --target export --output "type=local,dest=$ROOT/target/release" "$ROOT"
     else
-        die "Rust (cargo) ya da Docker gerekli. Rust: https://rustup.rs"
+        die "Rust (cargo) kurulu değil. Kurulum için: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
     fi
 fi
 [ -x "$BIN" ] || die "Derleme başarısız."

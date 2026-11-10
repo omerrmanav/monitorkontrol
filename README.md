@@ -12,7 +12,7 @@ Linux'ta monitörünüzün **parlaklık** ve **kontrastını** (DDC/CI ile), **y
 |---|---|
 | GNOME Shell 45 / 46 / 47 | Ubuntu 24.04+, Fedora 39+ vb. |
 | `ddcutil` | Monitörle konuşan araç |
-| Rust (`cargo`) **veya** Docker | Derleme için |
+| Rust (`cargo`) | Derleme için |
 | DDC/CI destekli monitör | Çoğu DisplayPort/HDMI monitör destekler; OSD menüsünde DDC/CI açık olmalı |
 
 ## Hızlı kurulum
@@ -43,17 +43,6 @@ sudo usermod -aG i2c $USER               # sonra oturumu kapat/aç
 ```
 
 Destek yoksa eklenti menüsünde kaydırıcılar pasif görünür ve durum mesajı yazar.
-
-## Docker hakkında
-
-Docker bu projenin **çalışma** ortamı için uygun değildir: DDC/CI ana makinedeki `/dev/i2c-*` aygıtlarına, GNOME eklentisi ise çalışan masaüstü kabuğuna erişmek zorundadır. Docker yalnızca **derleme** için sağlanır (Rust kurmak istemeyenler için):
-
-```bash
-docker build --target export --output type=local,dest=target/release .
-./install.sh
-```
-
-`install.sh`, `cargo` yoksa ve Docker varsa bunu otomatik yapar.
 
 ## Komut satırı
 
