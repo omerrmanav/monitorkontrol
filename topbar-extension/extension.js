@@ -62,13 +62,33 @@ class SystemMonitorReader {
                 let [okName, nameBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/name`);
                 if (okName) {
                     let name = new TextDecoder().decode(nameBytes).trim();
-                    let [okTemp, tempBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp1_input`);
-                    if (okTemp) {
-                        let t = Math.round(parseInt(new TextDecoder().decode(tempBytes).trim(), 10) / 1000);
-                        if (name.includes('k10temp') || name.includes('coretemp'))
-                            return t;
-                        if (best === null)
-                            best = t;
+                    if (name.includes('k10temp') || name.includes('coretemp')) {
+                        // AMD Ryzen için Tccd1 veya Tdie (gerçek fiziksel çekirdek sıcaklığı) ara
+                        for (let s = 1; s <= 4; s++) {
+                            try {
+                                let [okLabel, labelBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp${s}_label`);
+                                if (okLabel) {
+                                    let label = new TextDecoder().decode(labelBytes).trim().toLowerCase();
+                                    if (label.includes('tccd') || label.includes('tdie')) {
+                                        let [okVal, valBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp${s}_input`);
+                                        if (okVal) {
+                                            return Math.round(parseInt(new TextDecoder().decode(valBytes).trim(), 10) / 1000);
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                        // Bulunamazsa standart temp1_input değerini al
+                        let [okTemp, tempBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp1_input`);
+                        if (okTemp) {
+                            return Math.round(parseInt(new TextDecoder().decode(tempBytes).trim(), 10) / 1000);
+                        }
+                    }
+                    if (best === null) {
+                        let [okTemp, tempBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp1_input`);
+                        if (okTemp) {
+                            best = Math.round(parseInt(new TextDecoder().decode(tempBytes).trim(), 10) / 1000);
+                        }
                     }
                 }
             } catch (e) {}
