@@ -1,5 +1,15 @@
 # Monitör Kontrol
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/61f42b73-c981-41df-959b-ca32e51d436b" alt="Monitör Kontrol GNOME Shell Extension" width="340">
+</p>
+
+<p align="center">
+  <b>Linux GNOME için DDC/CI tabanlı modern monitör kontrol ve donanım izleme paneli.</b>
+</p>
+---
+
+
 Linux'ta monitörünüzün **parlaklık** ve **kontrastını** (DDC/CI ile), **yazı ölçeğini**, **koyu/açık temayı** ve CPU/GPU/RAM durumunu GNOME üst barından yönetin. Monitörün fiziksel tuşlarına gerek kalmaz.
 
 - Monitör adı ve yenileme hızı otomatik algılanır (sabit model yok)
