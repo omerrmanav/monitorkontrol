@@ -56,15 +56,15 @@ class SystemMonitorReader {
     }
 
     getCpuTemp() {
-        let best = null;
-        for (let i = 0; i < 6; i++) {
+        for (let i = 0; i < 8; i++) {
             try {
                 let [okName, nameBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/name`);
                 if (okName) {
-                    let name = new TextDecoder().decode(nameBytes).trim();
-                    if (name.includes('k10temp') || name.includes('coretemp')) {
-                        // AMD Ryzen için Tccd1 veya Tdie (gerçek fiziksel çekirdek sıcaklığı) ara
-                        for (let s = 1; s <= 4; s++) {
+                    let name = new TextDecoder().decode(nameBytes).trim().toLowerCase();
+                    // Sadece gerçek CPU sensörlerini hedefle (nvme, gpu ve wmi aygıtlarını hariç tut)
+                    if (name.includes('k10temp') || name.includes('coretemp') || name.includes('zenpower') || name.includes('cpu_thermal')) {
+                        // AMD Ryzen için Tccd1 veya Tdie (gerçek silikon çekirdek sıcaklığı) ara
+                        for (let s = 1; s <= 6; s++) {
                             try {
                                 let [okLabel, labelBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp${s}_label`);
                                 if (okLabel) {
@@ -78,22 +78,16 @@ class SystemMonitorReader {
                                 }
                             } catch (e) {}
                         }
-                        // Bulunamazsa standart temp1_input değerini al
+                        // Tccd bulunamazsa standart temp1_input (Tctl / Package) değerini al
                         let [okTemp, tempBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp1_input`);
                         if (okTemp) {
                             return Math.round(parseInt(new TextDecoder().decode(tempBytes).trim(), 10) / 1000);
                         }
                     }
-                    if (best === null) {
-                        let [okTemp, tempBytes] = GLib.file_get_contents(`/sys/class/hwmon/hwmon${i}/temp1_input`);
-                        if (okTemp) {
-                            best = Math.round(parseInt(new TextDecoder().decode(tempBytes).trim(), 10) / 1000);
-                        }
-                    }
                 }
             } catch (e) {}
         }
-        return best;
+        return null;
     }
 
     getCpuUsage() {
@@ -203,8 +197,12 @@ class DdcQueue {
         const next = this._pending.shift();
 
         try {
+            const args = (next.flag === '--restore')
+                ? [this._binPath, '--restore']
+                : [this._binPath, next.flag, String(next.value)];
+
             const proc = Gio.Subprocess.new(
-                [this._binPath, next.flag, String(next.value)],
+                args,
                 Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE
             );
             proc.wait_async(null, () => {
@@ -235,6 +233,7 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         this._debounceFontId = 0;
         this._statsTimerId = 0;
         this._restoreTimerId = 0;
+        this._startupRestoreTimers = [];
         this._shieldSignalId = 0;
         this._sleepSignalId = 0;
         this._monitorsSignalId = 0;
@@ -674,8 +673,8 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         this._loadInstantCache();
         this._syncFontScaleFromSettings();
 
-        // 1. Initial restore on login / extension start (anında uygulanır)
-        this._restoreSavedHardwareSettings(30);
+        // 1. Initial restore on login / extension start (kademeli soğuk açılış darbeleri)
+        this._scheduleStartupRestore();
 
         // 2. Restore when screen unlocks (şifreyi girip enter'a basar basmaz anında uygulanır)
         if (Main.screenShield) {
@@ -694,7 +693,7 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 this._sleepSignalId = this._loginManager.connect('prepare-for-sleep', (_lm, aboutToSuspend) => {
                     if (!aboutToSuspend) {
                         // System just resumed from sleep!
-                        this._restoreSavedHardwareSettings(50);
+                        this._scheduleStartupRestore();
                     }
                 });
             }
@@ -826,16 +825,44 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 this._loadInstantCache();
                 const data = this._getCurrentCachedData();
                 if (data && data.supported !== false) {
-                    if (typeof data.brightness === 'number') {
-                        this._ddcQueue.push('--brightness', data.brightness);
-                    }
-                    if (typeof data.contrast === 'number') {
-                        this._ddcQueue.push('--contrast', data.contrast);
-                    }
+                    this._ddcQueue.push('--restore', 0);
                 }
             } catch (e) {}
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    _scheduleStartupRestore() {
+        this._clearStartupRestoreTimers();
+        // Soğuk açılış veya uykudan uyanmada monitörün DDC kontrolcüsü 1.5 - 3.5 sn içinde hazır olur.
+        // Kesintisiz başarı için 3 darbeli kademeli geri yükleme:
+        // 1. Darbe: 150ms (ekran zaten aktifse anında uygular)
+        // 2. Darbe: 2200ms (soğuk açılışta DisplayPort link training bitişini yakalar)
+        // 3. Darbe: 4500ms (yavaş uyanan monitörler için kesin garanti darbesi)
+        const pulses = [150, 2200, 4500];
+        for (const delay of pulses) {
+            const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
+                try {
+                    this._loadInstantCache();
+                    const data = this._getCurrentCachedData();
+                    if (data && data.supported !== false) {
+                        this._ddcQueue.push('--restore', 0);
+                    }
+                } catch (e) {}
+                return GLib.SOURCE_REMOVE;
+            });
+            this._startupRestoreTimers.push(id);
+        }
+    }
+
+    _clearStartupRestoreTimers() {
+        if (this._startupRestoreTimers && this._startupRestoreTimers.length > 0) {
+            for (const id of this._startupRestoreTimers) {
+                if (id)
+                    GLib.source_remove(id);
+            }
+            this._startupRestoreTimers = [];
+        }
     }
 
     _syncFontScaleFromSettings() {
@@ -907,6 +934,7 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._clearStartupRestoreTimers();
         if (this._restoreTimerId) {
             GLib.source_remove(this._restoreTimerId);
             this._restoreTimerId = 0;

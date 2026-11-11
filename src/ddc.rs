@@ -286,7 +286,91 @@ pub fn set_vcp_fast(bus: u32, code: u8, value: u16) {
         &format!("0x{:02x}", code),
         &value.to_string(),
     ];
-    let _ = Command::new("ddcutil").args(args).output();
+    let output = Command::new("ddcutil").args(args).output();
+    if let Ok(out) = output {
+        if !out.status.success() {
+            // Hızlı deneme başarısız olduysa 60ms sonra standart zamanlama ile bir kez daha dene
+            thread::sleep(std::time::Duration::from_millis(60));
+            let _ = Command::new("ddcutil")
+                .args([
+                    "--bus",
+                    &bus.to_string(),
+                    "--noudf",
+                    "--noverify",
+                    "setvcp",
+                    &format!("0x{:02x}", code),
+                    &value.to_string(),
+                ])
+                .output();
+        }
+    }
+}
+
+pub fn set_vcp_with_retry(bus: u32, code: u8, value: u16, max_retries: u32, delay_ms: u64) -> bool {
+    let mut current_bus = bus;
+    let code_str = format!("0x{:02x}", code);
+    let val_str = value.to_string();
+
+    for attempt in 0..=max_retries {
+        let status = Command::new("ddcutil")
+            .args([
+                "--bus",
+                &current_bus.to_string(),
+                "--noudf",
+                "--sleep-multiplier",
+                "0.05",
+                "--noverify",
+                "setvcp",
+                &code_str,
+                &val_str,
+            ])
+            .status();
+
+        if let Ok(st) = status {
+            if st.success() {
+                return true;
+            }
+        }
+
+        // Eğer son denemeye yaklaştıysak ve hala başarısızsa I2C veri yolunu yeniden doğrula
+        if attempt == max_retries.saturating_sub(1) {
+            if let Some((new_bus, _, _)) = detect_monitor() {
+                current_bus = new_bus;
+            }
+        }
+
+        if attempt < max_retries {
+            thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+    }
+    false
+}
+
+pub fn restore_hardware_settings(max_retries: u32, delay_ms: u64) -> bool {
+    let mut data = CachedMonitorData::load_instant();
+    let mut bus = data.i2c_bus;
+
+    if bus == 0 || !data.supported {
+        if let Some((detected_bus, connector, model)) = detect_monitor() {
+            bus = detected_bus;
+            data.i2c_bus = detected_bus;
+            data.drm_connector = connector;
+            data.model = model;
+            data.supported = true;
+            data.save_instant();
+        } else {
+            return false;
+        }
+    }
+
+    // Parlaklığı uygula (deneme tekrarlı)
+    let b_ok = set_vcp_with_retry(bus, 0x10, data.brightness, max_retries, delay_ms);
+    // Monitörün I2C kontrolcüsüne komutlar arası nefes payı tanı
+    thread::sleep(std::time::Duration::from_millis(80));
+    // Kontrastı uygula (deneme tekrarlı)
+    let c_ok = set_vcp_with_retry(bus, 0x12, data.contrast, max_retries, delay_ms);
+
+    b_ok && c_ok
 }
 
 pub fn read_hardware_state() -> CachedMonitorData {
