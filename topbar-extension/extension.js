@@ -218,12 +218,13 @@ class DdcQueue {
 
 const MonitorTopBarIndicator = GObject.registerClass(
 class MonitorTopBarIndicator extends PanelMenu.Button {
-    _init(binPath) {
+    _init(binPath, extPath) {
         super._init(0.5, 'Monitör Kontrol', false);
         this.menu.box.set_style('min-width: 290px;');
 
         // The helper binary is installed next to extension.js, so no absolute path is needed.
         this._binPath = binPath;
+        this._extPath = extPath || '';
         this._ddcQueue = new DdcQueue(binPath);
         this._sysReader = new SystemMonitorReader();
         this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
@@ -240,13 +241,77 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         this._updatingFromCache = false;
         this._updatingFromSettings = false;
 
-        // Top Bar small icon
-        const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
-        const icon = new St.Icon({
-            icon_name: 'video-display-symbolic',
-            style_class: 'system-status-icon',
+        // Top Bar minimal stats container: [CPU] temp  [GPU] temp  [RAM] %  [☀️] %
+        const box = new St.BoxLayout({
+            style_class: 'panel-status-menu-box',
+            style: 'spacing: 8px;',
+            y_align: Clutter.ActorAlign.CENTER,
         });
-        box.add_child(icon);
+
+        // 1. CPU Badge: [icon] derece bilgisi
+        const cpuBox = new St.BoxLayout({
+            vertical: false,
+            style: 'spacing: 3px;',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const cpuIcon = this._createIcon('cpu-symbolic.svg', 'computer-chip-symbolic');
+        this._tbCpuLabel = new St.Label({
+            text: '--°C',
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: 600; font-size: 11.5px;',
+        });
+        cpuBox.add_child(cpuIcon);
+        cpuBox.add_child(this._tbCpuLabel);
+        box.add_child(cpuBox);
+
+        // 2. GPU Badge: [icon] derece bilgisi
+        const gpuBox = new St.BoxLayout({
+            vertical: false,
+            style: 'spacing: 3px;',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const gpuIcon = this._createIcon('gpu-symbolic.svg', 'applications-graphics-symbolic');
+        this._tbGpuLabel = new St.Label({
+            text: '--°C',
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: 600; font-size: 11.5px;',
+        });
+        gpuBox.add_child(gpuIcon);
+        gpuBox.add_child(this._tbGpuLabel);
+        box.add_child(gpuBox);
+
+        // 3. RAM Badge: [icon] kullanım yüzdesi
+        const ramBox = new St.BoxLayout({
+            vertical: false,
+            style: 'spacing: 3px;',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const ramIcon = this._createIcon('ram-symbolic.svg', 'drive-harddisk-solidstate-symbolic');
+        this._tbRamLabel = new St.Label({
+            text: '--%',
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: 600; font-size: 11.5px;',
+        });
+        ramBox.add_child(ramIcon);
+        ramBox.add_child(this._tbRamLabel);
+        box.add_child(ramBox);
+
+        // 4. Parlaklık Güneş Badge: [icon] yüzde bilgisi
+        const brightBox = new St.BoxLayout({
+            vertical: false,
+            style: 'spacing: 3px;',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const brightIcon = this._createIcon('sun-symbolic.svg', 'display-brightness-symbolic');
+        this._tbBrightLabel = new St.Label({
+            text: '--%',
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: 600; font-size: 11.5px;',
+        });
+        brightBox.add_child(brightIcon);
+        brightBox.add_child(this._tbBrightLabel);
+        box.add_child(brightBox);
+
         this.add_child(box);
 
         // =========================================================================
@@ -423,6 +488,8 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 return;
             const pct = Math.round(this._brightnessSlider.value * 100);
             this._brightnessValLabel.set_text(`%${pct}`);
+            if (this._tbBrightLabel)
+                this._tbBrightLabel.set_text(`%${pct}`);
             this._scheduleVcp('--brightness', pct, true);
         });
         this._brightnessSlider.connect('drag-end', () => {
@@ -431,6 +498,8 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 this._debounceBrightnessId = 0;
             }
             const pct = Math.round(this._brightnessSlider.value * 100);
+            if (this._tbBrightLabel)
+                this._tbBrightLabel.set_text(`%${pct}`);
             this._ddcQueue.push('--brightness', pct);
         });
 
@@ -656,22 +725,18 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 this._loadInstantCache();
                 this._syncFontScaleFromSettings();
                 this._refreshSystemStats();
-
-                // Live tick system stats every 2 seconds while menu is open
-                if (!this._statsTimerId) {
-                    this._statsTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
-                        this._refreshSystemStats();
-                        return GLib.SOURCE_CONTINUE;
-                    });
-                }
-            } else if (this._statsTimerId) {
-                GLib.source_remove(this._statsTimerId);
-                this._statsTimerId = 0;
             }
         });
 
         this._loadInstantCache();
         this._syncFontScaleFromSettings();
+        this._refreshSystemStats();
+
+        // Üst bardaki CPU, GPU, RAM ve parlaklık göstergelerini 3 saniyede bir düzenli tazele
+        this._statsTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 3, () => {
+            this._refreshSystemStats();
+            return GLib.SOURCE_CONTINUE;
+        });
 
         // 1. Initial restore on login / extension start (kademeli soğuk açılış darbeleri)
         this._scheduleStartupRestore();
@@ -705,6 +770,24 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         });
     }
 
+    _createIcon(fileName, fallbackName) {
+        if (this._extPath) {
+            const filePath = GLib.build_filenamev([this._extPath, 'icons', fileName]);
+            if (GLib.file_test(filePath, GLib.FileTest.EXISTS)) {
+                return new St.Icon({
+                    gicon: Gio.icon_new_for_string(filePath),
+                    style_class: 'system-status-icon',
+                    icon_size: 14,
+                });
+            }
+        }
+        return new St.Icon({
+            icon_name: fallbackName || 'system-run-symbolic',
+            style_class: 'system-status-icon',
+            icon_size: 14,
+        });
+    }
+
     _toggleDarkMode(enabled) {
         const scheme = enabled ? 'prefer-dark' : 'default';
         this._interfaceSettings.set_string('color-scheme', scheme);
@@ -729,23 +812,48 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
         const paint = (label, text, color, size) =>
             label.set_style(`font-size: ${size}px; font-weight: bold; color: ${color};`) || label.set_text(text);
 
-        // Ryzen 5 5600 (Tjmax 90°C): <65 normal, 65-79 sıcak, 80+ kritik
-        if (cpuTemp !== null)
+        // CPU Sıcaklığı
+        if (cpuTemp !== null) {
             paint(this._cpuStatsLabel, `${cpuTemp}°C`, pick(cpuTemp, 65, 80), 13);
+            if (this._tbCpuLabel) {
+                this._tbCpuLabel.set_text(`${cpuTemp}°C`);
+                if (cpuTemp >= 80) {
+                    this._tbCpuLabel.set_style('font-weight: 600; font-size: 11.5px; color: #f87171;');
+                } else {
+                    this._tbCpuLabel.set_style('font-weight: 600; font-size: 11.5px;');
+                }
+            }
+        }
         if (cpuPct !== null)
             paint(this._cpuPctLabel, `%${cpuPct}`, pick(cpuPct, 50, 85), 11);
 
-        // 16 GB RAM: <%60 rahat, %60-84 dolu, %85+ kritik
+        // RAM Kullanımı
         if (ram) {
             paint(this._ramStatsLabel, `${ram.usedGb} GB`, pick(ram.pct, 60, 85), 13);
             paint(this._ramPctLabel, `%${ram.pct}`, pick(ram.pct, 60, 85), 11);
+            if (this._tbRamLabel) {
+                this._tbRamLabel.set_text(`%${ram.pct}`);
+                if (ram.pct >= 85) {
+                    this._tbRamLabel.set_style('font-weight: 600; font-size: 11.5px; color: #f87171;');
+                } else {
+                    this._tbRamLabel.set_style('font-weight: 600; font-size: 11.5px;');
+                }
+            }
         }
 
-        // RTX 3060 (throttle ~83°C): <70 normal, 70-79 sıcak, 80+ kritik
+        // GPU (RTX 3060) Sıcaklığı
         this._sysReader.fetchGpuMetrics(gpu => {
             if (gpu) {
                 paint(this._gpuStatsLabel, `${gpu.temp}°C`, pick(gpu.temp, 70, 80), 13);
                 paint(this._gpuPctLabel, `%${gpu.util}`, pick(gpu.util, 50, 85), 11);
+                if (this._tbGpuLabel) {
+                    this._tbGpuLabel.set_text(`${gpu.temp}°C`);
+                    if (gpu.temp >= 80) {
+                        this._tbGpuLabel.set_style('font-weight: 600; font-size: 11.5px; color: #f87171;');
+                    } else {
+                        this._tbGpuLabel.set_style('font-weight: 600; font-size: 11.5px;');
+                    }
+                }
                 if (gpu.name) {
                     this._hwSubtitleLabel.set_text(`${cpuName}  •  ${gpu.name}`);
                 } else {
@@ -753,8 +861,16 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
                 }
             } else {
                 this._hwSubtitleLabel.set_text(cpuName);
+                if (this._tbGpuLabel)
+                    this._tbGpuLabel.set_text('--°C');
             }
         });
+
+        // Üst bardaki parlaklık bilgisini güncel tut
+        const cached = this._getCurrentCachedData();
+        if (cached && typeof cached.brightness === 'number' && this._tbBrightLabel) {
+            this._tbBrightLabel.set_text(`%${cached.brightness}`);
+        }
     }
 
     _scheduleVcp(flag, pct, isBrightness) {
@@ -908,6 +1024,8 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
             if (typeof data.brightness === 'number') {
                 this._brightnessValLabel.set_text(`%${data.brightness}`);
                 this._brightnessSlider.value = Math.max(0, Math.min(1, data.brightness / 100));
+                if (this._tbBrightLabel)
+                    this._tbBrightLabel.set_text(`%${data.brightness}`);
             }
             if (typeof data.contrast === 'number') {
                 this._contrastValLabel.set_text(`%${data.contrast}`);
@@ -981,7 +1099,10 @@ class MonitorTopBarIndicator extends PanelMenu.Button {
 
 export default class MonitorKontrolTopBarExtension extends Extension {
     enable() {
-        this._indicator = new MonitorTopBarIndicator(GLib.build_filenamev([this.path, 'monitorkontrol']));
+        this._indicator = new MonitorTopBarIndicator(
+            GLib.build_filenamev([this.path, 'monitorkontrol']),
+            this.path
+        );
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 

@@ -44,6 +44,7 @@ fi
 say "4/5  Eklenti kuruluyor: $DEST"
 mkdir -p "$DEST"
 cp -f "$ROOT/topbar-extension/metadata.json" "$ROOT/topbar-extension/extension.js" "$DEST/"
+cp -rf "$ROOT/topbar-extension/icons" "$DEST/"
 cp -f "$BIN" "$DEST/monitorkontrol"
 
 say "5/5  Etkinleştiriliyor"
